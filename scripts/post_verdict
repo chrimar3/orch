@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Post a commit status as the Reviewer GitHub App.
+
+Used for the Day 0 merge-blocking tests, for Christos's manual verdicts in
+steps 1-2 (pass --manual), and by the Reviewer lane from step 2 onwards.
+
+Credentials are read from untracked files, never from arguments:
+  .secrets/reviewer-app.id    the App ID (digits)
+  .secrets/reviewer-app.pem   the App's private key
+Override the directory with ORCH_SECRETS_DIR.
+
+Standard library only; the RS256 signature is made by the `openssl` binary.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+API = "https://api.github.com"
+CONTEXT = "orch/reviewer"
+STATES = ("success", "failure", "pending", "error")
+
+
+def secrets_dir() -> Path:
+    default = Path(__file__).resolve().parent.parent / ".secrets"
+    return Path(os.environ.get("ORCH_SECRETS_DIR", default))
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def app_jwt(app_id: str, key_path: Path, now: int | None = None) -> str:
+    """A short-lived JWT that identifies the App itself."""
+    now = int(time.time()) if now is None else now
+    header = _b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    claims = _b64(json.dumps({"iat": now - 60, "exp": now + 540, "iss": app_id}).encode())
+    signing_input = f"{header}.{claims}".encode()
+    signature = subprocess.run(
+        ["openssl", "dgst", "-sha256", "-sign", str(key_path)],
+        input=signing_input, capture_output=True, check=True,
+    ).stdout
+    return f"{header}.{claims}.{_b64(signature)}"
+
+
+def api(method: str, path: str, token: str, body: dict | None = None) -> dict:
+    request = urllib.request.Request(
+        API + path,
+        method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "orch-post-verdict",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode(errors="replace")[:300]
+        raise SystemExit(f"post_verdict: GitHub returned {err.code} on {method} {path}: {detail}")
+
+
+def installation_token(repo: str) -> str:
+    """Exchange the App JWT for a token scoped to the App's installation on repo."""
+    directory = secrets_dir()
+    id_file, key_file = directory / "reviewer-app.id", directory / "reviewer-app.pem"
+    for needed in (id_file, key_file):
+        if not needed.is_file():
+            raise SystemExit(f"post_verdict: missing {needed}")
+    jwt = app_jwt(id_file.read_text().strip(), key_file)
+    installation = api("GET", f"/repos/{repo}/installation", jwt)
+    return api("POST", f"/app/installations/{installation['id']}/access_tokens", jwt)["token"]
+
+
+def post_status(repo: str, sha: str, state: str, description: str, token: str,
+                target_url: str | None = None) -> dict:
+    body = {"state": state, "context": CONTEXT, "description": description[:140]}
+    if target_url:
+        body["target_url"] = target_url
+    return api("POST", f"/repos/{repo}/statuses/{sha}", token, body)
+
+
+def post_comment(repo: str, pr: int, text: str, token: str) -> dict:
+    return api("POST", f"/repos/{repo}/issues/{pr}/comments", token, {"body": text})
+
+
+def origin_repo() -> str:
+    url = subprocess.run(
+        ["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    # Works for https://github.com/owner/name.git and git@github.com:owner/name.git
+    return "/".join(url.removesuffix(".git").replace(":", "/").split("/")[-2:])
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--sha", required=True, help="full head SHA the verdict applies to")
+    parser.add_argument("--state", required=True, choices=STATES)
+    parser.add_argument("--description", required=True, help="one line, shown next to the check")
+    parser.add_argument("--repo", help="owner/name; default: the origin remote")
+    parser.add_argument("--manual", action="store_true",
+                        help="mark the verdict as posted by hand by Christos")
+    parser.add_argument("--pr", type=int, help="also post --comment-file on this PR")
+    parser.add_argument("--comment-file", type=Path, help="verdict text for the PR comment")
+    args = parser.parse_args(argv)
+
+    if len(args.sha) != 40:
+        raise SystemExit("post_verdict: --sha must be the full 40-character SHA")
+    if bool(args.pr) != bool(args.comment_file):
+        raise SystemExit("post_verdict: --pr and --comment-file go together")
+
+    repo = args.repo or origin_repo()
+    description = ("manual: " if args.manual else "") + args.description
+    token = installation_token(repo)
+    status = post_status(repo, args.sha, args.state, description, token)
+    if args.pr:
+        post_comment(repo, args.pr, args.comment_file.read_text(), token)
+    print(json.dumps({
+        "repo": repo, "sha": args.sha, "context": status.get("context"),
+        "state": status.get("state"), "description": status.get("description"),
+        "posted_by": (status.get("creator") or {}).get("login"), "manual": args.manual,
+    }))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

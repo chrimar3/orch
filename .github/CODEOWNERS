@@ -1,0 +1,36 @@
+# Protected paths (ROADMAP.md Part 1). Every line needs Christos's CODEOWNER
+# review on the current head. A pattern matches any change to a path it covers,
+# so additions, edits, deletions and both ends of a move are all caught.
+# The last matching pattern wins; keep one owner everywhere.
+
+# Gates, verdict, routing, dispatch
+/orch/gates.py            @chrimar3
+/orch/review.py           @chrimar3
+/orch/route.py            @chrimar3
+/orch/dispatch.py         @chrimar3
+/routing.yaml             @chrimar3
+/envelope.schema.yaml     @chrimar3
+
+# Tests and test configuration
+/tests/                   @chrimar3
+/acceptance/              @chrimar3
+/judge/                   @chrimar3
+/pyproject.toml           @chrimar3
+/uv.lock                  @chrimar3
+/pytest.ini               @chrimar3
+conftest.py               @chrimar3
+
+# Failure policy, lock, last-good promotion (Wave 1 tasks 3-5; listed before the files exist)
+/orch/failure.py          @chrimar3
+/orch/schedule.py         @chrimar3
+/orch/lastgood.py         @chrimar3
+
+# Credential and identity configuration, verdict publisher, client-name hashes
+/scripts/                 @chrimar3
+/clients.sha256           @chrimar3
+/.gitignore               @chrimar3
+
+# Repo rules and the roadmap itself
+/.github/                 @chrimar3
+/ROADMAP.md               @chrimar3
+/CLAUDE.md                @chrimar3

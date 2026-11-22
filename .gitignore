@@ -1,0 +1,20 @@
+# Secrets and identities
+.secrets/
+*.pem
+.env
+.env.*
+# Plain client-name list (only hashes are committed)
+clients.txt
+clients.local.*
+# ntfy topic and per-account CLI config dirs
+.ntfy-topic
+.accounts/
+# Run artefacts that may contain raw CLI output
+runs/*/raw/
+# Local ledger
+*.sqlite
+*.sqlite-journal
+worktrees/
+__pycache__/
+.venv/
+.pytest_cache/
